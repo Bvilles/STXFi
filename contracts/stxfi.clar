@@ -10,7 +10,7 @@
 ;; Data Variables
 (define-data-var total-deposits uint u0)
 (define-data-var total-borrows uint u0)
-(define-data-var last-interest-update uint (get-block-height))
+(define-data-var last-interest-update uint block-height)
 
 ;; Data Maps
 (define-map user-deposits principal uint)
@@ -29,7 +29,7 @@
 ;; Deposit STX into the lending pool
 (define-public (deposit (amount uint))
     (let (
-        (current-balance (default-to u0 (get-balance tx-sender)))
+        (current-balance (stx-get-balance tx-sender))
         (current-deposits (default-to u0 (map-get? user-deposits tx-sender)))
     )
     (if (>= current-balance amount)
@@ -75,15 +75,21 @@
 (define-public (repay (amount uint))
     (let (
         (current-borrows (default-to u0 (map-get? user-borrows tx-sender)))
-        (repay-amount (min amount current-borrows))
     )
-    (begin
-        (try! (stx-transfer? repay-amount tx-sender (as-contract tx-sender)))
-        (map-set user-borrows 
-            tx-sender 
-            (- current-borrows repay-amount))
-        (var-set total-borrows (- (var-get total-borrows) repay-amount))
-        (ok repay-amount))))
+    (if (> amount current-borrows)
+        (let ((repay-amount current-borrows))
+            (begin
+                (try! (stx-transfer? repay-amount tx-sender (as-contract tx-sender)))
+                (map-set user-borrows tx-sender u0)
+                (var-set total-borrows (- (var-get total-borrows) repay-amount))
+                (ok repay-amount)))
+        (begin
+            (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+            (map-set user-borrows 
+                tx-sender 
+                (- current-borrows amount))
+            (var-set total-borrows (- (var-get total-borrows) amount))
+            (ok amount)))))
 
 ;; Liquidate under-collateralized position
 (define-public (liquidate (borrower principal))
