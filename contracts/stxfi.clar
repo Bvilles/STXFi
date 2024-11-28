@@ -30,8 +30,13 @@
 (define-private (check-add (a uint) (b uint))
     (let ((sum (+ a b)))
         (if (< sum a)
-            (err u104)
+            (err ERR-ARITHMETIC-OVERFLOW)
             (ok sum))))
+
+(define-private (check-sub (a uint) (b uint))
+    (if (< a b)
+        (err ERR-ARITHMETIC-OVERFLOW)
+        (ok (- a b))))
 
 ;; Public Functions
 
@@ -41,13 +46,14 @@
         (current-balance (stx-get-balance tx-sender))
         (current-deposits (default-to u0 (map-get? user-deposits tx-sender)))
     )
-    (if (>= current-balance amount)
-        (let ((new-deposit (try! (check-add current-deposits amount))))
-            (begin
+    (if (and (> amount u0) (>= current-balance amount))
+        (match (check-add current-deposits amount)
+            new-deposit (begin
                 (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
                 (map-set user-deposits tx-sender new-deposit)
                 (var-set total-deposits (+ (var-get total-deposits) amount))
-                (ok amount)))
+                (ok amount))
+            error ERR-ARITHMETIC-OVERFLOW)
         ERR-INSUFFICIENT-FUNDS)))
 
 ;; Borrow STX from the lending pool
@@ -56,44 +62,53 @@
         (user-collateral-amount (default-to u0 (map-get? user-collateral tx-sender)))
         (current-borrows (default-to u0 (map-get? user-borrows tx-sender)))
         (collateral-value (* user-collateral-amount (get-collateral-price)))
-        (new-borrow-amount (try! (check-add current-borrows amount)))
     )
-    (if (is-collateral-sufficient? collateral-value new-borrow-amount)
-        (begin
-            (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
-            (map-set user-borrows tx-sender new-borrow-amount)
-            (var-set total-borrows (+ (var-get total-borrows) amount))
-            (ok amount))
-        ERR-INSUFFICIENT-COLLATERAL)))
+    (if (> amount u0)
+        (match (check-add current-borrows amount)
+            new-borrow-amount 
+                (if (is-collateral-sufficient? collateral-value new-borrow-amount)
+                    (begin
+                        (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+                        (map-set user-borrows tx-sender new-borrow-amount)
+                        (var-set total-borrows (+ (var-get total-borrows) amount))
+                        (ok amount))
+                    ERR-INSUFFICIENT-COLLATERAL)
+            error ERR-ARITHMETIC-OVERFLOW)
+        ERR-INVALID-AMOUNT)))
 
 ;; Add collateral
 (define-public (add-collateral (amount uint))
     (let (
         (current-collateral (default-to u0 (map-get? user-collateral tx-sender)))
-        (new-collateral (try! (check-add current-collateral amount)))
     )
-    (begin
-        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
-        (map-set user-collateral tx-sender new-collateral)
-        (ok amount))))
+    (if (> amount u0)
+        (match (check-add current-collateral amount)
+            new-collateral (begin
+                (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+                (map-set user-collateral tx-sender new-collateral)
+                (ok amount))
+            error ERR-ARITHMETIC-OVERFLOW)
+        ERR-INVALID-AMOUNT)))
 
 ;; Repay borrowed STX
 (define-public (repay (amount uint))
     (let (
         (current-borrows (default-to u0 (map-get? user-borrows tx-sender)))
     )
-    (if (> amount current-borrows)
-        (let ((repay-amount current-borrows))
+    (if (> amount u0)
+        (if (> amount current-borrows)
+            (let ((repay-amount current-borrows))
+                (begin
+                    (try! (stx-transfer? repay-amount tx-sender (as-contract tx-sender)))
+                    (map-set user-borrows tx-sender u0)
+                    (var-set total-borrows (- (var-get total-borrows) repay-amount))
+                    (ok repay-amount)))
             (begin
-                (try! (stx-transfer? repay-amount tx-sender (as-contract tx-sender)))
-                (map-set user-borrows tx-sender u0)
-                (var-set total-borrows (- (var-get total-borrows) repay-amount))
-                (ok repay-amount)))
-        (begin
-            (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
-            (map-set user-borrows tx-sender (- current-borrows amount))
-            (var-set total-borrows (- (var-get total-borrows) amount))
-            (ok amount)))))
+                (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+                (map-set user-borrows tx-sender (- current-borrows amount))
+                (var-set total-borrows (- (var-get total-borrows) amount))
+                (ok amount)))
+        ERR-INVALID-AMOUNT)))
 
 ;; Liquidate under-collateralized position
 (define-public (liquidate (borrower principal))
